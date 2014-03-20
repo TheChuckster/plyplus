@@ -7,14 +7,35 @@ from .stree_collection import STreeCollection
 from .utils import StringTypes, StringType, classify, _cache_0args
 
 
-class Str(StringType):
-    # XXX Required to exclude 'parent'
-    def __getstate__(self):
-        return StringType(self)
-    def __setstate__(self, x):
-        pass
+class WeakPickleMixin(object):
+    """Prevent pickling of weak references to attributes"""
 
-class STree(object):
+    weak_attributes = (
+            'parent',
+        )
+
+    def __getstate__(self):
+        dict = self.__dict__.copy()
+
+        # Pickle weak references as hard references, pickle deals with circular references for us
+        for key, val in dict.items():
+            if isinstance(val, ref):
+                dict[key] = val()
+
+        return dict
+
+    def __setstate__(self, data):
+        self.__dict__.update(data)
+
+        # Convert hard references that should be weak to weak references
+        for key in data:
+            val = getattr(self, key)
+            if key in self.weak_attributes and val is not None:
+                setattr(self, key, ref(val))
+
+class Str(WeakPickleMixin, StringType): pass
+
+class STree(WeakPickleMixin, object):
     # __slots__ = 'head', 'tail', '_cache', 'parent', 'index_in_parent'
 
     def __init__(self, head, tail, lineno=0, lexpos=0, skip_adjustments=False):
@@ -64,6 +85,16 @@ class STree(object):
                 return
         raise ValueError("head not found: %s"%head)
 
+    def remove_kids_by_head(self, head):
+        removed = 0
+        for i, child in reversed(list(enumerate(self.tail))):
+            if is_stree(child) and child.head == head:
+                del self.tail[i]
+                removed += 1
+        if removed:
+            self.clear_cache()
+        return removed
+
     def remove_kid_by_id(self, child_id):
         for i, child in enumerate(self.tail):
             if id(child) == child_id:
@@ -71,6 +102,12 @@ class STree(object):
                 self.clear_cache()
                 return
         raise ValueError("id not found: %s"%child_id)
+
+    def prune_by_head(self, head):
+        self.remove_kids_by_head(head)
+        for kid in self.tail:
+            if hasattr(kid, 'prune_by_head'):
+                kid.prune_by_head(head)
 
     def remove_from_parent(self):
         self.parent().remove_kid_by_id(id(self))
@@ -97,9 +134,15 @@ class STree(object):
         return not (self == other)
 
     def __getstate__(self):
-        return self.head, self.tail
+        dict = super(STree, self).__getstate__()
+        # No point in pickling a cache...
+        dict.pop('_cache', None)
+        return dict
+
     def __setstate__(self, data):
-        self.head, self.tail = data
+        super(STree, self).__setstate__(data)
+
+        # Ensure we've got a clean cache
         self.clear_cache()
 
     def __deepcopy__(self, memo):

@@ -4,11 +4,11 @@ Plyplus is a general-purpose parser built on top of [PLY](http://www.dabeaz.com/
 
 ## Main Concepts
 
-1. *Separation of code from grammar*: The result is grammars which are more portable and legible, and the code is cleaner too.
+1. *Separation of code from grammar*: Grammar files are more readable and portable, and it makes the code cleaner too.
 
 2. *Always build an AST (tree)*: Every application, not matter how small, can benefit from the power and simplicity of working with a tree, instead of a state-machine.
 
-3. *Follow Python's Idioms*: Simplicity and readability are more important than speed, but Plyplus is fast enough!
+3. *Follow Python's Idioms*: Beauty, simplicity and readability are more important than speed. But Plyplus is fast enough!
 
 
 ## Features
@@ -146,6 +146,6 @@ Plyplus uses the [MIT license](https://github.com/jquery/jquery/blob/master/MIT-
 
 I hope this readme inspired you to play with Plyplus a bit, and maybe even use it for your project.
 
-For more examples, check out the [test module](/test/plyplus_test.py)
+For more examples, check out the [test module](/plyplus/test/test_parser.py)
 
 If you have any questions or ideas, please email me at erezshin+plyplus at gmail com

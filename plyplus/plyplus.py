@@ -7,10 +7,16 @@ import types
 import itertools
 import logging
 import ast
+import hashlib
+import codecs
+try:
+    import cPickle as pickle
+except ImportError:
+    import pickle
 
 from ply import lex, yacc
 
-from . import PLYPLUS_DIR, grammar_parser
+from . import __version__, PLYPLUS_DIR, grammar_parser
 from .utils import StringTypes, StringType
 
 from .strees import STree, SVisitor, STransformer, is_stree, SVisitor_Recurse, Str
@@ -67,6 +73,10 @@ from .strees import STree, SVisitor, STransformer, is_stree, SVisitor_Recurse, S
 #DONE: Multi-line comments
 #DONE: Better error handling (choose between prints and raising exception, setting threshold, etc.)
 #
+
+grammar_logger = logging.getLogger('Grammar')
+grammar_logger.setLevel(logging.ERROR)
+
 
 _TOKEN_NAMES = {
     ':' : 'COLON',
@@ -464,12 +474,6 @@ class TokValue(Str):
         inst.index = index
         return inst
 
-    # XXX Required to exclude 'parent'
-    def __getstate__(self):
-        return self.type, self.line, self.column, self.pos_in_stream, self.index
-    def __setstate__(self, x):
-        self.type, self.line, self.column, self.pos_in_stream, self.index = x
-
 class LexerWrapper(object):
     def __init__(self, lexer, newline_tokens_names, newline_char='\n', ignore_token_names=()):
         self.lexer = lexer
@@ -532,21 +536,47 @@ class LexerWrapper(object):
 
 class Grammar(object):
     def __init__(self, grammar, **options):
-        if hasattr(grammar, 'read'):
-            # PLY turns "a.b" into "b", so gotta get rid of the dot.
-            tab_filename = "parsetab_%s" % os.path.split(grammar.name)[1].replace('.', '_')
+        # Some, but not all file-like objects have a 'name' attribute
+        try:
             source = grammar.name
-            grammar = grammar.read()
-        else:
-            assert isinstance(grammar, StringTypes)
-            tab_filename = "parsetab_%s" % str(hash(grammar)%(2**32))
+        except AttributeError:
             source = '<string>'
+            tab_filename = "parsetab_%s" % str(hash(grammar)%(2**32))
+        else:
+            # PLY turns "a.b" into "b", so gotta get rid of the dot.
+            tab_filename = "parsetab_%s" % os.path.basename(source).replace('.', '_')
 
+        # Drain file-like objects to get their contents
+        try:
+            read = grammar.read
+        except AttributeError:
+            pass
+        else:
+            grammar = read()
+
+        assert isinstance(grammar, StringTypes)
+
+        cache_grammar = options.pop('cache_grammar', False)
+        if cache_grammar:
+            plyplus_cache_filename = PLYPLUS_DIR + '/%s-%s-%s.plyplus' % (tab_filename, hashlib.sha256(grammar).hexdigest(), __version__)
+            if os.path.exists(plyplus_cache_filename):
+                with open(plyplus_cache_filename, 'rb') as f:
+                    self._grammar = pickle.load(f)
+            else:
+                self._grammar = self._create_grammar(grammar, source, tab_filename, options)
+
+                with open(plyplus_cache_filename, 'wb') as f:
+                    pickle.dump(self._grammar, f, pickle.HIGHEST_PROTOCOL)
+        else:
+            self._grammar = self._create_grammar(grammar, source, tab_filename, options)
+
+    @staticmethod
+    def _create_grammar(grammar, source, tab_filename, options):
         grammar_tree = grammar_parser.parse(grammar)
         if not grammar_tree:
             raise GrammarException("Parse Error: Could not create grammar")
 
-        self._grammar = _Grammar(grammar_tree, source, tab_filename, **options)
+        return _Grammar(grammar_tree, source, tab_filename, **options)
 
     def lex(self, text):
         return self._grammar.lex(text)
@@ -577,9 +607,6 @@ class _Grammar(object):
         self.lexer_postproc = None
         self._newline_value = '\n'
 
-        self.logger = logging.getLogger('Grammar')
-        self.logger.setLevel(logging.ERROR)
-
         # -- Build Grammar --
         self.subgrammars = {}
         ExtractSubgrammars_Visitor(source_name, tab_filename, self.options).visit(grammar_tree)
@@ -593,7 +620,13 @@ class _Grammar(object):
             ply_grammar, = ply_grammar_and_code
         else:
             ply_grammar, code = ply_grammar_and_code
-            exec(code, locals())
+
+            # prefix with newlines to get line-number count correctly (ensures tracebacks are correct)
+            src_code = '\n' * (max(code.line, 1) - 1) + code
+
+            # compiling before executing attaches source_name as filename: shown in tracebacks
+            exec_code = compile(src_code, source_name, 'exec')
+            exec(exec_code, locals())
 
         for x in ply_grammar:
             type_, (name, defin) = x.head, x.tail
@@ -610,7 +643,7 @@ class _Grammar(object):
 
         # -- Build Parser --
         if not self.just_lex:
-            self.parser = yacc.yacc(module=self, debug=self.debug, tabmodule=tab_filename, errorlog=self.logger, outputdir=PLYPLUS_DIR)
+            self.parser = yacc.yacc(module=self, debug=self.debug, tabmodule=tab_filename, errorlog=grammar_logger, outputdir=PLYPLUS_DIR)
 
     def __repr__(self):
         return '<Grammar from %s, tab at %s>' % (self.source_name, self.tab_filename)
@@ -644,11 +677,7 @@ class _Grammar(object):
         #if self.subgrammars:
             #ApplySubgrammars_Visitor(self.subgrammars).visit(tree)
 
-        # Apply auto-filtering (remove 'punctuation' tokens)
-        #if self.auto_filter_tokens:
-            #FilterTokens_Visitor().visit(tree)
-
-        #SimplifySyntaxTree_Visitor(self.rules_to_flatten, self.rules_to_expand, self.keep_empty_trees).visit(tree)
+        SimplifySyntaxTree_Visitor(self.rules_to_flatten, self.rules_to_expand, self.keep_empty_trees).visit(tree)
 
         return tree
 
@@ -702,7 +731,7 @@ class _Grammar(object):
         # but for speed reasons, I ended-up with this ridiculus regexp:
         token_value = re.sub(r'(\\[nrf])', r'\\\1', token_value)
 
-        return token_value.decode('unicode-escape')
+        return codecs.getdecoder('unicode_escape')(token_value)[0]
 
     def _add_token_with_mods(self, name, defin):
         token_value, token_features = defin
@@ -725,20 +754,18 @@ class _Grammar(object):
 
                     self.tokens.append(name)
 
-                    code = ('\tt.type = self._%s_unless_toks_dict.get(t.value, %r)\n' % (name, name)
-                           +'\tfor regexp, tokname in self._%s_unless_toks_regexps:\n' % (name,)
-                           +'\t\tif regexp.match(t.value):\n'
-                           +'\t\t\tt.type = tokname\n'
-                           +'\t\t\tbreak\n'
-                           +'\treturn t')
-                    s = ('def t_%s(self, t):\n\t%s\n%s\nx = t_%s\n'
-                        %(name, repr(token_value), code, name))
-                    d = {}
-                    exec(s, d)
+                    def t_token(self, t):
+                        t.type = getattr(self, '_%s_unless_toks_dict' % (name,)).get(t.value, name)
+                        for regexp, tokname in getattr(self, '_%s_unless_toks_regexps' % (name,)):
+                            if regexp.match(t.value):
+                                t.type = tokname
+                                break
+                        return t
+                    t_token.__doc__ = token_value
 
-                    setattr(self, 't_%s'%name, d['x'].__get__(self))
-                    setattr(self, '_%s_unless_toks_dict'%name, unless_toks_dict)
-                    setattr(self, '_%s_unless_toks_regexps'%name, unless_toks_regexps)
+                    setattr(self, 't_%s' % (name,), t_token.__get__(self))
+                    setattr(self, '_%s_unless_toks_dict' % (name,), unless_toks_dict)
+                    setattr(self, '_%s_unless_toks_regexps' % (name,), unless_toks_regexps)
 
                     token_added = True
 
@@ -774,27 +801,33 @@ class _Grammar(object):
         elif RuleMods.FLATTEN in mods:
             self.rules_to_flatten.add( rule_name )
 
-        if RuleMods.EXPAND1 in mods:
-            code = '\tp[0] = self.tree_class(%r, p[1:], skip_adjustments=True) if len(p)>2 else p[1]' % (rule_name,)
-        elif RuleMods.EXPAND in mods:
-            # EXPAND is here to keep tree-depth minimal, it won't expand all EXPAND rules, just the recursive ones
-            code = ('\tif len(p) <= 2:\n'
-                    '\t\tp[0] = p[1]\n'
-                    '\t\treturn\n'
-                    '\tsubtree = []\n'
-                    '\tfor child in p[1:]:\n'
-                    '\t\tif isinstance(child, self.tree_class) and child.head in self.rules_to_expand:\n'
-                    '\t\t\tsubtree.extend(child.tail)\n'
-                    '\t\telse:\n'
-                    '\t\t\tsubtree.append(child)\n'
-                    '\tp[0] = self.tree_class(%r, subtree, skip_adjustments=True)') % (rule_name,)
-        else:
-            code = '\tp[0] = self.tree_class(%r, p[1:], skip_adjustments=True)' % (rule_name,)
-        s = ('def p_%s(self, p):\n\t%r\n%s\nx = p_%s\n'
-            %(rule_name, rule_def, code, rule_name))
-        d = {}
-        exec(s, d)
-        setattr(self, 'p_%s'%rule_name, types.MethodType(d['x'], self))
+        def p_rule(self, p):
+            subtree = []
+            for child in p.__getslice__(1, None):
+                if isinstance(child, self.tree_class) and (
+                           (                            child.head in self.rules_to_expand )
+                        or (child.head == rule_name and child.head in self.rules_to_flatten)
+                        ):
+                    # (EXPAND | FLATTEN) & mods -> here to keep tree-depth minimal, prevents unbounded tree-depth on
+                    #                              recursive rules.
+                    #           EXPAND1  & mods -> perform necessary expansions on children first to ensure we don't end
+                    #                              up expanding inside our parents if (after expansion) we have more
+                    #                              than one child.
+                    subtree.extend(child.tail)
+                else:
+                    subtree.append(child)
+
+            # Apply auto-filtering (remove 'punctuation' tokens)
+            if self.auto_filter_tokens and len(subtree) != 1:
+                subtree = list(filter(is_stree, subtree))
+
+            if len(subtree) == 1 and (RuleMods.EXPAND in mods or RuleMods.EXPAND1 in mods):
+                # Self-expansion: only perform on EXPAND and EXPAND1 rules
+                p[0] = subtree[0]
+            else:
+                p[0] = self.tree_class(rule_name, subtree, skip_adjustments=True)
+        p_rule.__doc__ = rule_def
+        setattr(self, 'p_%s' % (rule_name,), types.MethodType(p_rule, self))
 
 
     @staticmethod
