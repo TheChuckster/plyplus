@@ -17,7 +17,11 @@ class Str(StringType):
 class STree(object):
     # __slots__ = 'head', 'tail', '_cache', 'parent', 'index_in_parent'
 
-    def __init__(self, head, tail, skip_adjustments=False):
+    def __init__(self, head, tail, lineno=0, lexpos=0, skip_adjustments=False):
+        #print "INSIDE STREE CTR: lineno=" + str(lineno) + "; lexpos=" + str(lexpos)
+        self.lineno = lineno
+        self.lexpos = lexpos
+
         if skip_adjustments:
             self.head, self.tail = head, tail
             self.clear_cache()
@@ -99,7 +103,7 @@ class STree(object):
         self.clear_cache()
 
     def __deepcopy__(self, memo):
-        return type(self)(self.head, deepcopy(self.tail, memo))
+        return type(self)(self.head, deepcopy(self.tail, memo), self.lineno, self.lexpos)
 
     @property
     @_cache_0args
@@ -249,7 +253,7 @@ class STree(object):
         graph.write_png(filename)
 
     def __repr__(self):
-        return '%s(%s)' % (self.head, ', '.join(map(repr,self.tail)))
+        return '%s:(%s)' % (self.head, ', '.join(map(repr,self.tail)))
 
 
 
@@ -309,7 +313,7 @@ class STransformer(object):
                 for branch in tree.tail
             ]
 
-        new_tree = tree.__class__(tree.head, branches)
+        new_tree = tree.__class__(tree.head, branches, tree.lineno, tree.lexpos)
         if hasattr(tree, 'depth'):
             new_tree.depth = tree.depth # XXX ugly hack, need a general solution for meta-data (meta attribute?)
         if hasattr(tree, 'parent'):

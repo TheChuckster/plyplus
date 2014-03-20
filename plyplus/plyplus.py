@@ -142,7 +142,7 @@ class ApplySubgrammars_Visitor(SVisitor):
     def __default__(self, tree):
         for i, tok in enumerate(tree.tail):
             if type(tok) == TokValue and tok.type in self.subgrammars:
-                parsed_tok = self.subgrammars[tok.type].parse(tok)
+                parsed_tok = self.subgrammars[tok.type].parse(tok, tracking=True)
                 assert parsed_tok.head == 'start'
                 tree.tail[i] = parsed_tok
 
@@ -629,21 +629,26 @@ class _Grammar(object):
         assert not self.just_lex
 
         self.errors = []
-        tree = self.parser.parse(text, lexer=self.lexer, debug=self.debug)
+        print "PARSING"
+        tree = self.parser.parse(text, lexer=self.lexer, debug=self.debug, tracking=True)
         if not tree:
             self.errors.append("Could not create parse tree!")
         if self.errors:
             raise ParseError('\n'.join(self.errors))
 
+        print "RAW TREE BEFORE VISITORS: " + str(tree)
+        print "DIR: " + str(dir(tree))
+        #print "LINE NO: " + str(tree.lineno)
+
         # Apply subgrammars
-        if self.subgrammars:
-            ApplySubgrammars_Visitor(self.subgrammars).visit(tree)
+        #if self.subgrammars:
+            #ApplySubgrammars_Visitor(self.subgrammars).visit(tree)
 
         # Apply auto-filtering (remove 'punctuation' tokens)
-        if self.auto_filter_tokens:
-            FilterTokens_Visitor().visit(tree)
+        #if self.auto_filter_tokens:
+            #FilterTokens_Visitor().visit(tree)
 
-        SimplifySyntaxTree_Visitor(self.rules_to_flatten, self.rules_to_expand, self.keep_empty_trees).visit(tree)
+        #SimplifySyntaxTree_Visitor(self.rules_to_flatten, self.rules_to_expand, self.keep_empty_trees).visit(tree)
 
         return tree
 
